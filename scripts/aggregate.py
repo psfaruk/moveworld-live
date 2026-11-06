@@ -13,7 +13,7 @@ presence TTL, so shared positions disappear by themselves.
 
 Wire contract — ping file `data/pings/<device_id>.json`:
     {"v":1,"id":"<hex>","name":"Faruk","lat":52.52,"lon":13.40,
-     "acc":12.5,"hdg":45.0,"spd":1.2,"src":"live_gps",
+     "acc":12.5,"hdg":45.0,"spd":1.2,"src":"LIVE_GPS",
      "t":1730000000500,"sent":1730000000900}
 
 Wire contract — aggregate `data/locations.json` (same user shape the FastAPI
@@ -21,7 +21,7 @@ WebSocket feed emits, so the app reuses one code path):
     {"v":1,"updated_at":<ms>,"ttl_s":300,
      "users":[{"user_id":"<hex>","display_name":"Faruk","lat":52.52,
                "lon":13.40,"accuracy_m":12.5,"heading_deg":45.0,
-               "speed_mps":1.2,"source":"live_gps",
+               "speed_mps":1.2,"source":"LIVE_GPS",
                "recorded_at":1730000000.5}]}
 
 Untrusted-input handling: ping files are written by apps holding a scoped
@@ -40,13 +40,15 @@ from pathlib import Path
 TTL_MS = 300_000  # 5 minutes — presence lifetime after the last ping
 MAX_NAME = 64
 DEVICE_ID_RE = re.compile(r"^[0-9a-f]{16,64}$")
+# Wire values match the app/backend truth enum (ADR-003) — UPPERCASE. The
+# app's LocationSource.fromWire maps anything else to UNAVAILABLE.
 VALID_SOURCES = {
-    "live_gps",
-    "delayed",
-    "last_known",
-    "scheduled_transport",
-    "simulated",
-    "unavailable",
+    "LIVE_GPS",
+    "DELAYED",
+    "LAST_KNOWN",
+    "SCHEDULED_TRANSPORT",
+    "SIMULATED",
+    "UNAVAILABLE",
 }
 
 
@@ -102,7 +104,7 @@ def parse_ping(path: Path, now_ms: int) -> tuple[dict | None, bool]:
 
     src = data.get("src")
     if src not in VALID_SOURCES:
-        src = "live_gps"
+        src = "LIVE_GPS"
 
     user: dict = {
         "user_id": device_id,
@@ -186,13 +188,14 @@ def selftest() -> int:
                 json.dumps(doc), encoding="utf-8"
             )
 
-        # 1. Two valid, fresh pings.
+        # 1. Two valid, fresh pings (one with a junk `src` that must
+        #    normalize to LIVE_GPS).
         write(
             "a" * 32 + ".json",
             {
                 "v": 1, "id": "a" * 32, "name": "  Faruk \x01\x02 ",
                 "lat": 52.52, "lon": 13.40, "acc": 12.5, "hdg": 45.0,
-                "spd": 1.2, "src": "live_gps", "t": now - 1000,
+                "spd": 1.2, "src": "LIVE_GPS", "t": now - 1000,
                 "sent": now - 500,
             },
         )
@@ -200,7 +203,7 @@ def selftest() -> int:
             "b" * 32 + ".json",
             {
                 "v": 1, "id": "b" * 32, "name": "Rahim",
-                "lat": -33.87, "lon": 151.21, "src": "live_gps",
+                "lat": -33.87, "lon": 151.21, "src": "garbage",
                 "t": now - 2000, "sent": now - 1500,
             },
         )
@@ -236,6 +239,7 @@ def selftest() -> int:
         assert abs(faruk["recorded_at"] - (now - 1000) / 1000.0) < 1e-6
         rahim = doc["users"][1]
         assert "accuracy_m" not in rahim and "heading_deg" not in rahim
+        assert rahim["source"] == "LIVE_GPS", rahim  # junk src normalized
 
         # 6. No change -> no rewrite, changed=False.
         s2 = aggregate(pings, agg, now)
@@ -246,7 +250,7 @@ def selftest() -> int:
         write(
             "f" * 32 + ".json",
             {"v": 1, "id": "f" * 32, "name": "Ayesha", "lat": 0.0,
-             "lon": 0.0, "src": "live_gps", "t": now, "sent": now},
+             "lon": 0.0, "src": "LIVE_GPS", "t": now, "sent": now},
         )
         s3 = aggregate(pings, agg, now)
         assert s3["changed"] is True and s3["kept"] == 3
